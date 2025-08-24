@@ -18,9 +18,13 @@ struct PreferencesView: View {
 
     var body: some View {
         Form {
-            Section("Global Shortcut") {
+Section("Global Shortcut") {
                 HotkeyRecorderView()
                 Text("Default: Command-Shift-C").font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section("Groq API") {
+                GroqAPISettingsView()
             }
 
             Section("Excluded Applications") {
@@ -62,6 +66,31 @@ struct PreferencesView: View {
 
     private func remove(_ b: String) {
         excludedBundleIDs.removeAll { $0 == b }
+    }
+}
+
+struct GroqAPISettingsView: View {
+    @State private var apiKey: String = KeychainService.shared.get(key: .groqAPIKey) ?? ""
+    @State private var showingSaved = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                SecureField("GROQ_API_KEY", text: $apiKey)
+                Button("Save") {
+                    KeychainService.shared.set(apiKey, key: .groqAPIKey)
+                    showingSaved = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { showingSaved = false }
+                }
+                .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            Text("Your API key is stored securely in Keychain.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if showingSaved {
+                Text("Saved").font(.caption).foregroundStyle(.green)
+            }
+        }
     }
 }
 

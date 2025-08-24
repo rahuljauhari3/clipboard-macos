@@ -1,15 +1,20 @@
 import SwiftUI
 import AppKit
+import Carbon
 
 struct ContentView: View {
     @ObservedObject private var viewModel: ContentViewModel
     let onClose: () -> Void
+    @Binding var isActiveTab: Bool
 
     @State private var search: String = ""
+    @State private var selection: ClipboardItem.ID?
 
-    init(database: ClipboardDatabase, onClose: @escaping () -> Void) {
+    init(database: ClipboardDatabase, onClose: @escaping () -> Void, isActiveTab: Binding<Bool>) {
         self.viewModel = ContentViewModel(database: database)
         self.onClose = onClose
+        self._isActiveTab = isActiveTab
+        self._selection = State(initialValue: nil)
     }
 
     var body: some View {
@@ -24,25 +29,34 @@ struct ContentView: View {
             }
             .padding([.top, .horizontal])
 
-            List {
-                ForEach(viewModel.items) { item in
-                    ClipboardRow(item: item)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            viewModel.copy(item)
-                            onClose()
-                        }
-                        .contextMenu {
-                            Button("Copy") { viewModel.copy(item); onClose() }
-                            Button(role: .destructive) { viewModel.delete(item) } label: { Text("Delete") }
-                        }
+            ScrollViewReader { proxy in
+                List(selection: $selection) {
+                    ForEach(viewModel.items) { item in
+                        ClipboardRow(item: item)
+                            .contentShape(Rectangle())
+                            .tag(item.id)
+                            .id(item.id)
+                            .onTapGesture {
+                                viewModel.copy(item)
+                                onClose()
+                            }
+                            .contextMenu {
+                                Button("Copy") { viewModel.copy(item); onClose() }
+                                Button(role: .destructive) { viewModel.delete(item) } label: { Text("Delete") }
+                            }
+                    }
+                    .onDelete { indexSet in
+                        indexSet.map { viewModel.items[$0] }.forEach(viewModel.delete)
+                    }
                 }
-                .onDelete { indexSet in
-                    indexSet.map { viewModel.items[$0] }.forEach(viewModel.delete)
+                .listStyle(.inset)
+                .frame(minHeight: 380)
+                .onChange(of: selection) { _, newValue in
+                    if let id = newValue {
+                        withAnimation { proxy.scrollTo(id, anchor: .center) }
+                    }
                 }
             }
-            .listStyle(.inset)
-            .frame(minHeight: 380)
 
             HStack {
                 Spacer()
@@ -55,10 +69,42 @@ struct ContentView: View {
         .onChange(of: search) { oldValue, newValue in
             viewModel.refresh(query: newValue)
         }
+        .onChange(of: viewModel.items) { _, newItems in
+            // Maintain selection if possible; otherwise select first item
+            if let sel = selection, newItems.contains(where: { $0.id == sel }) {
+                // keep current selection
+            } else {
+                selection = newItems.first?.id
+            }
+        }
+        .background(
+            KeyboardHandlerRepresentable(
+                isEnabled: isActiveTab,
+                onUp: { moveSelection(-1) },
+                onDown: { moveSelection(1) },
+                onEnter: { copySelectionAndClose() }
+            )
+        )
     }
 
     private func openPreferences() {
-        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        PreferencesWindowManager.shared.show()
+    }
+
+    private func moveSelection(_ delta: Int) {
+        guard !viewModel.items.isEmpty else { return }
+        if let current = selection, let idx = viewModel.items.firstIndex(where: { $0.id == current }) {
+            let newIndex = max(0, min(viewModel.items.count - 1, idx + delta))
+            selection = viewModel.items[newIndex].id
+        } else {
+            selection = viewModel.items.first?.id
+        }
+    }
+
+    private func copySelectionAndClose() {
+        guard let sel = selection, let item = viewModel.items.first(where: { $0.id == sel }) else { return }
+        viewModel.copy(item)
+        onClose()
     }
 }
 
@@ -128,6 +174,79 @@ struct ClipboardRow: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+}
+
+// Capture arrow and enter keys to navigate/copy in the history list
+struct KeyboardHandlerRepresentable: NSViewRepresentable {
+    var isEnabled: Bool
+    var onUp: () -> Void
+    var onDown: () -> Void
+    var onEnter: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        context.coordinator.view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.setEnabled(isEnabled)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onUp: onUp, onDown: onDown, onEnter: onEnter)
+    }
+
+    final class Coordinator: NSObject {
+        let view = NSView(frame: .zero)
+        private var monitor: Any?
+        private var enabled: Bool = false
+        let onUp: () -> Void
+        let onDown: () -> Void
+        let onEnter: () -> Void
+
+        init(onUp: @escaping () -> Void, onDown: @escaping () -> Void, onEnter: @escaping () -> Void) {
+            self.onUp = onUp
+            self.onDown = onDown
+            self.onEnter = onEnter
+            super.init()
+        }
+
+        deinit {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+
+        func setEnabled(_ enabled: Bool) {
+            guard self.enabled != enabled else { return }
+            self.enabled = enabled
+            if enabled {
+                installMonitor()
+            } else {
+                if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
+            }
+        }
+
+        private func installMonitor() {
+            if monitor != nil { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self = self else { return event }
+                // Only handle if app is active and a window is key
+                guard NSApp.isActive, NSApp.keyWindow != nil else { return event }
+                // Allow arrow/enter keys to work even when focus is in a text field
+                switch Int(event.keyCode) {
+                case kVK_UpArrow:
+                    self.onUp()
+                    return nil
+                case kVK_DownArrow:
+                    self.onDown()
+                    return nil
+                case kVK_Return, kVK_ANSI_KeypadEnter:
+                    self.onEnter()
+                    return nil
+                default:
+                    return event
+                }
+            }
+        }
     }
 }
 
