@@ -26,6 +26,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var database: ClipboardDatabase!
     private var monitor: ClipboardMonitor!
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Clear in-memory Groq API key on exit
+        GroqSession.shared.apiKey = nil
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         database = try? ClipboardDatabase()

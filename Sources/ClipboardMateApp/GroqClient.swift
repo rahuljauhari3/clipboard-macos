@@ -44,20 +44,24 @@ final class GroqClient {
     // OpenAI-compatible base URL on Groq
     var baseURL: URL = URL(string: "https://api.groq.com/openai/v1")!
 
-    // Known models with web search capability (fallback if API does not expose this)
+    // Known models with built-in web search capability (compound models perform search implicitly)
     private let knownWebSearchModels: Set<String> = [
-        // Add/adjust as Groq updates; placeholder examples
-        "llama-3.3-70b-versatile",
-        "llama-3.3-8b-instant"
+        "compound-beta",
+        "compound-beta-mini"
     ]
 
     private var urlSession: URLSession = .shared
 
     private func apiKey() throws -> String {
-        if let key = KeychainService.shared.get(key: .groqAPIKey), !key.isEmpty {
-            return key
+        if let raw = GroqSession.shared.apiKey {
+            let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty { return key }
         }
-        throw NSError(domain: "GroqClient", code: 401, userInfo: [NSLocalizedDescriptionKey: "Missing Groq API key. Set it in Preferences."])
+        if let raw = ProcessInfo.processInfo.environment["GROQ_API_KEY"] {
+            let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty { return key }
+        }
+        throw NSError(domain: "GroqClient", code: 401, userInfo: [NSLocalizedDescriptionKey: "Missing Groq API key. Set it in the Chatbot tab or provide GROQ_API_KEY."])
     }
 
     func fetchModels() async throws -> [GroqModel] {
@@ -67,9 +71,12 @@ final class GroqClient {
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
 
         let (data, response) = try await urlSession.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw NSError(domain: "GroqClient", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Invalid API key"])
+            }
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw NSError(domain: "GroqClient", code: (response as? HTTPURLResponse)?.statusCode ?? -1, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch models: \(body)"])
+            throw NSError(domain: "GroqClient", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Failed to fetch models: \(body)"])
         }
 
         // OpenAI-compatible format: { data: [ {id: "...", ...}, ... ] }
@@ -98,9 +105,13 @@ final class GroqClient {
             "stream": false
         ]
         if useWebSearch {
-            // Groq docs indicate built-in Web Search tool; use OpenAI tool syntax
-            body["tools"] = [["type": "web_search"]]
-            body["tool_choice"] = "auto"
+            if model.hasPrefix("compound-") {
+                // compound-* models have built-in web search; do not send a tools array
+                // The model will autonomously call the web search capability and include executed_tools in the response.
+            } else {
+                // For non-compound models, this client does not implement function or MCP tool routing yet.
+                // Avoid sending an invalid tools payload that causes API errors. Proceed without tools.
+            }
         }
 
         request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])

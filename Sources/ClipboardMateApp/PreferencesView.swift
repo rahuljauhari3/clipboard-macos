@@ -23,7 +23,7 @@ Section("Global Shortcut") {
                 Text("Default: Command-Shift-C").font(.caption).foregroundStyle(.secondary)
             }
 
-            Section("Groq API") {
+            Section("Groq API (Session)") {
                 GroqAPISettingsView()
             }
 
@@ -70,7 +70,7 @@ Section("Global Shortcut") {
 }
 
 struct GroqAPISettingsView: View {
-    @State private var apiKey: String = KeychainService.shared.get(key: .groqAPIKey) ?? ""
+    @State private var apiKey: String = GroqSession.shared.apiKey ?? ""
     @State private var showingSaved = false
 
     var body: some View {
@@ -78,13 +78,13 @@ struct GroqAPISettingsView: View {
             HStack {
                 SecureField("GROQ_API_KEY", text: $apiKey)
                 Button("Save") {
-                    KeychainService.shared.set(apiKey, key: .groqAPIKey)
+                    GroqSession.shared.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                     showingSaved = true
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { showingSaved = false }
                 }
                 .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            Text("Your API key is stored securely in Keychain.")
+            Text("Your API key is kept in memory for this app session only.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if showingSaved {

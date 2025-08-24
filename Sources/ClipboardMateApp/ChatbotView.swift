@@ -10,7 +10,7 @@ struct ChatbotView: View {
     @State private var errorText: String?
 
     // Inline API key handling when missing
-    @State private var hasAPIKey: Bool = KeychainService.shared.get(key: .groqAPIKey)?.isEmpty == false
+    @State private var hasAPIKey: Bool = (GroqSession.shared.apiKey?.isEmpty == false) || (ProcessInfo.processInfo.environment["GROQ_API_KEY"]?.isEmpty == false)
     @State private var newAPIKey: String = ""
     @State private var saveFeedback: String?
 
@@ -52,6 +52,10 @@ struct ChatbotView: View {
                                 selectedModel = filteredModels().first
                             }
                         }
+
+                    Spacer()
+                    Button("Clear Chat") { messages.removeAll() }
+                        .disabled(messages.isEmpty)
                 }
 
                 ScrollView {
@@ -73,9 +77,10 @@ struct ChatbotView: View {
                 .background(Color(NSColor.textBackgroundColor))
                 .cornerRadius(6)
 
-                HStack(alignment: .center) {
+            HStack(alignment: .center) {
                     TextField("Ask something...", text: $input, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
+                        .onSubmit { send() }
                     Button(action: send) {
                         if loading { ProgressView() } else { Text("Send") }
                     }
@@ -108,7 +113,9 @@ struct ChatbotView: View {
     private func send() {
         guard hasAPIKey else { return }
         guard let modelId = selectedModel?.id else { return }
-        let userMsg = GroqChatMessage(role: .user, content: input)
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let userMsg = GroqChatMessage(role: .user, content: trimmed)
         let newMessages = messages + [userMsg]
         messages = newMessages
         input = ""
@@ -133,9 +140,9 @@ struct ChatbotView: View {
     private func saveAPIKeyInline() {
         let trimmed = newAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        KeychainService.shared.set(trimmed, key: .groqAPIKey)
+        GroqSession.shared.apiKey = trimmed
         hasAPIKey = true
-        saveFeedback = "Saved"
+        saveFeedback = "Saved for this session"
         Task { await loadModelsIfPossible() }
     }
 }
