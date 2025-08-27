@@ -96,9 +96,16 @@ final class GroqClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         // Build body
-        var body: [String: Any] = [
+        // Ensure the assistant is instructed to answer in Markdown unless a system message already exists
+        var outgoing = messages
+        if !messages.contains(where: { $0.role == .system }) {
+            let systemPrompt = "You are a helpful assistant. Format all responses in GitHub-flavored Markdown. Use headings, bullet lists, tables, and fenced code blocks where appropriate. Keep code blocks fenced with triple backticks and include the language when known."
+            outgoing.insert(GroqChatMessage(role: .system, content: systemPrompt), at: 0)
+        }
+
+        let body: [String: Any] = [
             "model": model,
-            "messages": messages.map { [
+            "messages": outgoing.map { [
                 "role": $0.role.rawValue,
                 "content": $0.content
             ] },

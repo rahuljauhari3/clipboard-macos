@@ -65,7 +65,8 @@ struct ChatbotView: View {
                                 Text(msg.role == .user ? "You:" : "Bot:")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                Text(msg.content)
+                                markdownText(msg.content)
+                                    .textSelection(.enabled)
                                 Spacer()
                             }
                         }
@@ -144,6 +145,19 @@ struct ChatbotView: View {
         hasAPIKey = true
         saveFeedback = "Saved for this session"
         Task { await loadModelsIfPossible() }
+    }
+
+    // Lightweight helper to parse Markdown once, reducing type-checker complexity in the body
+    private func markdownText(_ content: String) -> Text {
+        var options = AttributedString.MarkdownParsingOptions()
+        options.allowsExtendedAttributes = true
+        options.interpretedSyntax = .full
+        options.failurePolicy = .returnPartiallyParsedIfPossible
+        if let attributed = try? AttributedString(markdown: content, options: options) {
+            return Text(attributed)
+        } else {
+            return Text(content)
+        }
     }
 }
 
