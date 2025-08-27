@@ -10,7 +10,7 @@ let package = Package(
         .executable(name: "clipboardmate", targets: ["ClipboardMateApp"]) 
     ],
     dependencies: [
-        .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.15.3")
+        .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.15.4")
     ],
     targets: [
         .executableTarget(

@@ -24,6 +24,7 @@ struct ChatbotView: View {
                         .foregroundStyle(.secondary)
                     HStack {
                         SecureField("GROQ_API_KEY", text: $newAPIKey)
+                            .onSubmit { saveAPIKeyInline() }
                         Button("Save") { saveAPIKeyInline() }
                             .disabled(newAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }

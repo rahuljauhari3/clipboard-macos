@@ -77,11 +77,8 @@ struct GroqAPISettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 SecureField("GROQ_API_KEY", text: $apiKey)
-                Button("Save") {
-                    GroqSession.shared.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    showingSaved = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { showingSaved = false }
-                }
+                    .onSubmit { save() }
+                Button("Save") { save() }
                 .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             Text("Your API key is kept in memory for this app session only.")
@@ -91,6 +88,14 @@ struct GroqAPISettingsView: View {
                 Text("Saved").font(.caption).foregroundStyle(.green)
             }
         }
+    }
+    
+    private func save() {
+        let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        GroqSession.shared.apiKey = trimmed
+        showingSaved = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { showingSaved = false }
     }
 }
 
