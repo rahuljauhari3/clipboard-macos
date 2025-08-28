@@ -62,14 +62,11 @@ struct ChatbotView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         ForEach(Array(messages.enumerated()), id: \.offset) { _, msg in
-                            HStack(alignment: .top) {
-                                Text(msg.role == .user ? "You:" : "Bot:")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                markdownText(msg.content)
-                                    .textSelection(.enabled)
-                                Spacer()
-                            }
+                            ChatMessageRow(
+                                message: msg,
+                                markdownRenderer: { content in markdownText(content) },
+                                onCopyCode: { code in ClipboardService.copyTextToClipboard(code) }
+                            )
                         }
                         if let errorText { Text(errorText).foregroundStyle(.red).font(.caption) }
                     }
@@ -158,6 +155,142 @@ struct ChatbotView: View {
             return Text(attributed)
         } else {
             return Text(content)
+        }
+    }
+}
+
+// Renders a single chat message with Markdown text and code blocks that include a copy button
+private struct ChatMessageRow: View {
+    let message: GroqChatMessage
+    let markdownRenderer: (String) -> Text
+    let onCopyCode: (String) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(message.role == .user ? "You:" : "Bot:")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(segments.indices, id: \.self) { i in
+                    let segment = segments[i]
+                    switch segment {
+                    case .text(let t):
+                        markdownRenderer(t)
+                            .textSelection(.enabled)
+                            .lineSpacing(3)
+                    case .code(let lang, let code):
+                        CodeBlockView(code: code, language: lang) {
+                            onCopyCode(code)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var segments: [Segment] {
+        Self.parseSegments(message.content)
+    }
+
+    private enum Segment {
+        case text(String)
+        case code(language: String?, code: String)
+    }
+
+    private static func parseSegments(_ content: String) -> [Segment] {
+        var result: [Segment] = []
+        var rest = content[...]
+
+        while let fenceStart = rest.range(of: "```") {
+            let before = String(rest[..<fenceStart.lowerBound])
+            if !before.isEmpty { result.append(.text(before)) }
+
+            var after = rest[fenceStart.upperBound...]
+            // Read language identifier (until first newline if present)
+            var language: String? = nil
+            if let newline = after.firstIndex(of: "\n") {
+                let langToken = String(after[..<newline]).trimmingCharacters(in: .whitespacesAndNewlines)
+                language = langToken.isEmpty ? nil : langToken
+                after = after[after.index(after.startIndex, offsetBy: after.distance(from: after.startIndex, to: newline) + 1)...]
+            } else {
+                // No newline after fence; treat remainder as code
+                let code = String(after)
+                result.append(.code(language: nil, code: code))
+                rest = ""[...]
+                break
+            }
+
+            if let fenceEnd = after.range(of: "```") {
+                let code = String(after[..<fenceEnd.lowerBound])
+                result.append(.code(language: language, code: code.trimmingCharacters(in: .whitespacesAndNewlines)))
+                rest = after[fenceEnd.upperBound...]
+            } else {
+                // Unterminated code block -> take rest as code
+                let code = String(after)
+                result.append(.code(language: language, code: code.trimmingCharacters(in: .whitespacesAndNewlines)))
+                rest = ""[...]
+                break
+            }
+        }
+
+        if !rest.isEmpty {
+            result.append(.text(String(rest)))
+        }
+        return result
+    }
+}
+
+private struct CodeBlockView: View {
+    let code: String
+    let language: String?
+    var onCopy: () -> Void
+
+    @State private var copied = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let language, !language.isEmpty {
+                    Text(language)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                ScrollView(.horizontal, showsIndicators: true) {
+                    Text(code)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(.vertical, 2)
+                }
+            }
+            .padding(8)
+            .background(Color(NSColor.controlBackgroundColor))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.black.opacity(0.06))
+            )
+            .cornerRadius(6)
+
+            HStack(spacing: 6) {
+                if copied {
+                    Image(systemName: "checkmark")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button(action: {
+                    onCopy()
+                    withAnimation(.easeInOut(duration: 0.15)) { copied = true }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                        withAnimation(.easeInOut(duration: 0.15)) { copied = false }
+                    }
+                }) {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy code")
+            }
+            .padding(6)
         }
     }
 }

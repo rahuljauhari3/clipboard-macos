@@ -14,6 +14,13 @@ enum ClipboardService {
         }
         _ = pb.changeCount
     }
+
+    static func copyTextToClipboard(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        _ = pb.changeCount
+    }
 }
 
 extension NSImage {
