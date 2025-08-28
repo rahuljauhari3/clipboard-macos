@@ -1,6 +1,13 @@
 import SwiftUI
 
 struct ChatbotView: View {
+    @Binding var isActiveTab: Bool
+
+    // Chat input history navigation state
+    @FocusState private var inputFocused: Bool
+    @State private var historyCursor: Int = -1 // -1 = not navigating history
+    @State private var draftBeforeHistory: String = "" // store current input before entering history
+
     @State private var models: [GroqModel] = []
     @State private var selectedModel: GroqModel?
     @State private var useWebSearch: Bool = false
@@ -13,6 +20,10 @@ struct ChatbotView: View {
     @State private var hasAPIKey: Bool = (GroqSession.shared.apiKey?.isEmpty == false) || (ProcessInfo.processInfo.environment["GROQ_API_KEY"]?.isEmpty == false)
     @State private var newAPIKey: String = ""
     @State private var saveFeedback: String?
+
+    init(isActiveTab: Binding<Bool>) {
+        self._isActiveTab = isActiveTab
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -77,8 +88,9 @@ struct ChatbotView: View {
                 .cornerRadius(6)
 
             HStack(alignment: .center) {
-                    TextField("Ask something...", text: $input, axis: .vertical)
+TextField("Ask something...", text: $input, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
+                        .focused($inputFocused)
                         .onSubmit { send() }
                     Button(action: send) {
                         if loading { ProgressView() } else { Text("Send") }
@@ -87,8 +99,15 @@ struct ChatbotView: View {
                 }
             }
         }
-        .padding()
+.padding()
         .onAppear { Task { await loadModelsIfPossible() } }
+        .background(
+            KeyboardHandlerRepresentable(
+                isEnabled: isActiveTab && inputFocused,
+                onUp: { navigateInputHistoryUp() },
+                onDown: { navigateInputHistoryDown() }
+            )
+        )
     }
 
     private func filteredModels() -> [GroqModel] {
@@ -109,7 +128,7 @@ struct ChatbotView: View {
         }
     }
 
-    private func send() {
+private func send() {
         guard hasAPIKey else { return }
         guard let modelId = selectedModel?.id else { return }
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -118,6 +137,9 @@ struct ChatbotView: View {
         let newMessages = messages + [userMsg]
         messages = newMessages
         input = ""
+        // Reset history navigation after sending
+        historyCursor = -1
+        draftBeforeHistory = ""
         loading = true
         errorText = nil
         Task {
@@ -146,7 +168,7 @@ struct ChatbotView: View {
     }
 
     // Lightweight helper to parse Markdown once, reducing type-checker complexity in the body
-    private func markdownText(_ content: String) -> Text {
+private func markdownText(_ content: String) -> Text {
         var options = AttributedString.MarkdownParsingOptions()
         options.allowsExtendedAttributes = true
         options.interpretedSyntax = .full
@@ -155,6 +177,37 @@ struct ChatbotView: View {
             return Text(attributed)
         } else {
             return Text(content)
+        }
+    }
+
+    // MARK: - Input history navigation
+    private var userQuestionsRecentFirst: [String] {
+        // Most recent user messages first
+        let users = messages.compactMap { $0.role == .user ? $0.content : nil }
+        return Array(users.reversed())
+    }
+
+    private func navigateInputHistoryUp() {
+        let history = userQuestionsRecentFirst
+        guard !history.isEmpty else { return }
+        if historyCursor == -1 { draftBeforeHistory = input }
+        let next = min(historyCursor + 1, history.count - 1)
+        guard next != historyCursor else { return }
+        historyCursor = next
+        input = history[next]
+    }
+
+    private func navigateInputHistoryDown() {
+        let history = userQuestionsRecentFirst
+        guard !history.isEmpty else { return }
+        if historyCursor > 0 {
+            historyCursor -= 1
+            input = history[historyCursor]
+        } else if historyCursor == 0 {
+            historyCursor = -1
+            input = draftBeforeHistory
+        } else {
+            // Not in history; nothing to do
         }
     }
 }

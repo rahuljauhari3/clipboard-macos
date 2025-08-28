@@ -56,7 +56,7 @@ struct MainTabView: View {
             HistoryTab(database: database, onClose: onClose, isActive: Binding(get: { selectedTab == 0 }, set: { _ in }))
                 .tabItem { Label("History", systemImage: "list.bullet") }
                 .tag(0)
-            ChatbotView()
+            ChatbotView(isActiveTab: Binding(get: { selectedTab == 1 }, set: { _ in }))
                 .tabItem { Label("Chatbot", systemImage: "bubble.left.and.bubble.right") }
                 .tag(1)
         }
