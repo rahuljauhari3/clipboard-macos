@@ -168,16 +168,13 @@ private func send() {
     }
 
     // Lightweight helper to parse Markdown once, reducing type-checker complexity in the body
-private func markdownText(_ content: String) -> Text {
-        var options = AttributedString.MarkdownParsingOptions()
-        options.allowsExtendedAttributes = true
-        options.interpretedSyntax = .full
-        options.failurePolicy = .returnPartiallyParsedIfPossible
-        if let attributed = try? AttributedString(markdown: content, options: options) {
+    private func markdownText(_ content: String) -> Text {
+        // Prefer native Markdown rendering for nicer typography (headings, lists, emphasis).
+        // Fallback to verbatim if parsing fails.
+        if let attributed = try? AttributedString(markdown: content) {
             return Text(attributed)
-        } else {
-            return Text(content)
         }
+        return Text(verbatim: content)
     }
 
     // MARK: - Input history navigation
@@ -229,9 +226,19 @@ private struct ChatMessageRow: View {
                     let segment = segments[i]
                     switch segment {
                     case .text(let t):
-                        markdownRenderer(t)
-                            .textSelection(.enabled)
-                            .lineSpacing(3)
+                        // Split non-code text into sub-segments so Markdown tables render beautifully
+                        let subs = parseNonCodeSubsegments(t)
+                        ForEach(subs.indices, id: \.self) { j in
+                            let s = subs[j]
+                            switch s {
+                            case .markdown(let md):
+                                markdownRenderer(md)
+                                    .textSelection(.enabled)
+                                    .lineSpacing(3)
+                            case .table(let table):
+                                MarkdownTableView(model: table)
+                            }
+                        }
                     case .code(let lang, let code):
                         CodeBlockView(code: code, language: lang) {
                             onCopyCode(code)
@@ -250,6 +257,12 @@ private struct ChatMessageRow: View {
     private enum Segment {
         case text(String)
         case code(language: String?, code: String)
+    }
+
+    // Sub-segments inside a text block: plain Markdown text or a parsed Markdown table
+    private enum RichTextSegment {
+        case markdown(String)
+        case table(MarkdownTableModel)
     }
 
     private static func parseSegments(_ content: String) -> [Segment] {
@@ -292,6 +305,86 @@ private struct ChatMessageRow: View {
             result.append(.text(String(rest)))
         }
         return result
+    }
+
+    // Split a non-code text block into Markdown text and Markdown-style tables
+    private func parseNonCodeSubsegments(_ text: String) -> [RichTextSegment] {
+        var output: [RichTextSegment] = []
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var i = 0
+        var currentMarkdownChunk = ""
+
+        func flushMarkdown() {
+            if !currentMarkdownChunk.isEmpty {
+                output.append(.markdown(currentMarkdownChunk))
+                currentMarkdownChunk = ""
+            }
+        }
+
+        while i < lines.count {
+            // Detect a table: header line with pipes, followed by a delimiter line like ---|:---:|---
+            if i + 1 < lines.count,
+               lines[i].contains("|") && Self.isDelimiterLine(lines[i+1]) {
+                // Gather table block
+                let header = lines[i]
+                let delimiter = lines[i+1]
+                var rows: [String] = []
+                var j = i + 2
+                while j < lines.count, lines[j].contains("|") && !lines[j].trimmingCharacters(in: .whitespaces).isEmpty {
+                    rows.append(lines[j])
+                    j += 1
+                }
+                flushMarkdown()
+                let model = Self.parseTableBlock(headerLine: header, delimiterLine: delimiter, rowLines: rows)
+                output.append(.table(model))
+                i = j
+            } else {
+                currentMarkdownChunk += (currentMarkdownChunk.isEmpty ? "" : "\n") + lines[i]
+                i += 1
+            }
+        }
+        flushMarkdown()
+        return output
+    }
+    // MARK: - Markdown table parsing helpers
+    struct MarkdownTableModel: Identifiable {
+        let id = UUID()
+        var headers: [String]?
+        var alignments: [MarkdownTableAlignment]
+        var rows: [[String]]
+    }
+
+    enum MarkdownTableAlignment { case left, center, right }
+
+    private static func isDelimiterLine(_ line: String) -> Bool {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.contains("|") || trimmed.contains("-") else { return false }
+        // Allowed chars: | - : and whitespace
+        let allowed = CharacterSet(charactersIn: "|-: ")
+        return trimmed.unicodeScalars.allSatisfy { allowed.contains($0) } && trimmed.contains("-")
+    }
+
+    private static func parseTableBlock(headerLine: String, delimiterLine: String, rowLines: [String]) -> MarkdownTableModel {
+        func splitCells(_ s: String) -> [String] {
+            var t = s.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("|") { t.removeFirst() }
+            if t.hasSuffix("|") { t.removeLast() }
+            return t.split(separator: "|", omittingEmptySubsequences: false).map { String($0).trimmingCharacters(in: .whitespaces) }
+        }
+        func alignmentForSpec(_ spec: String) -> MarkdownTableAlignment {
+            let t = spec.trimmingCharacters(in: .whitespaces)
+            let left = t.hasPrefix(":")
+            let right = t.hasSuffix(":")
+            if left && right { return .center }
+            if right { return .right }
+            return .left
+        }
+
+        let headers = splitCells(headerLine)
+        let delims = splitCells(delimiterLine)
+        let aligns: [MarkdownTableAlignment] = delims.map(alignmentForSpec)
+        let rows = rowLines.map(splitCells)
+        return MarkdownTableModel(headers: headers, alignments: aligns, rows: rows)
     }
 }
 
@@ -345,6 +438,62 @@ private struct CodeBlockView: View {
             }
             .padding(6)
         }
+    }
+}
+
+// Nicely styled renderer for Markdown tables
+private struct MarkdownTableView: View {
+    let model: ChatMessageRow.MarkdownTableModel
+
+    private func alignment(_ a: ChatMessageRow.MarkdownTableAlignment) -> Alignment {
+        switch a { case .left: return .leading; case .center: return .center; case .right: return .trailing }
+    }
+
+    private var columnCount: Int {
+        max(model.headers?.count ?? 0, model.rows.map { $0.count }.max() ?? 0)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            if let headers = model.headers {
+                Grid(horizontalSpacing: 12, verticalSpacing: 6) {
+                    GridRow {
+                        ForEach(0..<columnCount, id: \.self) { c in
+                            let text = c < headers.count ? headers[c] : ""
+                            Text(text)
+                                .font(.caption)
+                                .bold()
+                                .frame(maxWidth: .infinity, alignment: alignment(model.alignments.indices.contains(c) ? model.alignments[c] : .left))
+                                .padding(.vertical, 6)
+                        }
+                    }
+                }
+                .background(Color.black.opacity(0.04))
+            }
+
+            // Rows
+            Grid(horizontalSpacing: 12, verticalSpacing: 6) {
+                ForEach(model.rows.indices, id: \.self) { r in
+                    GridRow {
+                        ForEach(0..<columnCount, id: \.self) { c in
+                            let text = c < model.rows[r].count ? model.rows[r][c] : ""
+                            Text(text)
+                                .font(.system(size: 12))
+                                .frame(maxWidth: .infinity, alignment: alignment(model.alignments.indices.contains(c) ? model.alignments[c] : .left))
+                                .padding(.vertical, 4)
+                        }
+                    }
+                    .background(r.isMultiple(of: 2) ? Color.clear : Color.black.opacity(0.02))
+                }
+            }
+        }
+        .padding(8)
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.black.opacity(0.06))
+        )
+        .cornerRadius(6)
     }
 }
 
