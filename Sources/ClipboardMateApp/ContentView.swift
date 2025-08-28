@@ -177,12 +177,16 @@ struct ClipboardRow: View {
     }
 }
 
-// Capture arrow and enter keys to navigate/copy in the history list
+// Capture arrow/enter in history, and optionally Ctrl+Tab for tab switching
 struct KeyboardHandlerRepresentable: NSViewRepresentable {
     var isEnabled: Bool
-    var onUp: () -> Void
-    var onDown: () -> Void
-    var onEnter: () -> Void
+    // Optional handlers: if nil, the key will be ignored and passed through
+    var onUp: (() -> Void)? = nil
+    var onDown: (() -> Void)? = nil
+    var onEnter: (() -> Void)? = nil
+    // Optional tab switching handlers
+    var onCtrlTab: (() -> Void)? = nil
+    var onCtrlShiftTab: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> NSView {
         context.coordinator.view
@@ -193,21 +197,25 @@ struct KeyboardHandlerRepresentable: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onUp: onUp, onDown: onDown, onEnter: onEnter)
+        Coordinator(onUp: onUp, onDown: onDown, onEnter: onEnter, onCtrlTab: onCtrlTab, onCtrlShiftTab: onCtrlShiftTab)
     }
 
     final class Coordinator: NSObject {
         let view = NSView(frame: .zero)
         private var monitor: Any?
         private var enabled: Bool = false
-        let onUp: () -> Void
-        let onDown: () -> Void
-        let onEnter: () -> Void
+        let onUp: (() -> Void)?
+        let onDown: (() -> Void)?
+        let onEnter: (() -> Void)?
+        let onCtrlTab: (() -> Void)?
+        let onCtrlShiftTab: (() -> Void)?
 
-        init(onUp: @escaping () -> Void, onDown: @escaping () -> Void, onEnter: @escaping () -> Void) {
+        init(onUp: (() -> Void)?, onDown: (() -> Void)?, onEnter: (() -> Void)?, onCtrlTab: (() -> Void)?, onCtrlShiftTab: (() -> Void)?) {
             self.onUp = onUp
             self.onDown = onDown
             self.onEnter = onEnter
+            self.onCtrlTab = onCtrlTab
+            self.onCtrlShiftTab = onCtrlShiftTab
             super.init()
         }
 
@@ -231,17 +239,25 @@ struct KeyboardHandlerRepresentable: NSViewRepresentable {
                 guard let self = self else { return event }
                 // Only handle if app is active and a window is key
                 guard NSApp.isActive, NSApp.keyWindow != nil else { return event }
+
+                // Handle Ctrl+Tab / Ctrl+Shift+Tab for tab switching
+                if Int(event.keyCode) == kVK_Tab && event.modifierFlags.contains(.control) {
+                    if event.modifierFlags.contains(.shift) {
+                        if let onCtrlShiftTab { onCtrlShiftTab(); return nil }
+                    } else {
+                        if let onCtrlTab { onCtrlTab(); return nil }
+                    }
+                    return event
+                }
+
                 // Allow arrow/enter keys to work even when focus is in a text field
                 switch Int(event.keyCode) {
                 case kVK_UpArrow:
-                    self.onUp()
-                    return nil
+                    if let onUp { onUp(); return nil } else { return event }
                 case kVK_DownArrow:
-                    self.onDown()
-                    return nil
+                    if let onDown { onDown(); return nil } else { return event }
                 case kVK_Return, kVK_ANSI_KeypadEnter:
-                    self.onEnter()
-                    return nil
+                    if let onEnter { onEnter(); return nil } else { return event }
                 default:
                     return event
                 }

@@ -49,6 +49,7 @@ struct MainTabView: View {
     let onClose: () -> Void
 
     @State private var selectedTab: Int = 0
+    private let tabCount: Int = 2
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -60,6 +61,14 @@ struct MainTabView: View {
                 .tag(1)
         }
         .frame(width: 520, height: 560)
+        // Capture Ctrl+Tab to move between tabs
+        .background(
+            KeyboardHandlerRepresentable(
+                isEnabled: true,
+                onCtrlTab: { selectedTab = (selectedTab + 1) % tabCount },
+                onCtrlShiftTab: { selectedTab = (selectedTab + tabCount - 1) % tabCount }
+            )
+        )
     }
 }
 
