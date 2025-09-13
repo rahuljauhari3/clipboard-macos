@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 struct ChatbotView: View {
     @Binding var isActiveTab: Bool
@@ -169,12 +170,213 @@ private func send() {
 
     // Lightweight helper to parse Markdown once, reducing type-checker complexity in the body
     private func markdownText(_ content: String) -> Text {
-        // Prefer native Markdown rendering for nicer typography (headings, lists, emphasis).
-        // Fallback to verbatim if parsing fails.
-        if let attributed = try? AttributedString(markdown: content) {
+        // Normalize minor LLM formatting quirks (paragraph breaks, conservative punctuation),
+        // then parse with full Markdown to improve headings/lists/paragraphs rendering.
+        let normalized = normalizeMarkdown(content)
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .full,
+            failurePolicy: .returnPartiallyParsedIfPossible
+        )
+        if let attributed = try? AttributedString(markdown: normalized, options: options) {
             return Text(attributed)
         }
-        return Text(verbatim: content)
+        return Text(verbatim: normalized)
+    }
+
+    // Heuristic normalizer for bot replies to improve paragraph breaks and missing terminal punctuation
+    private func normalizeMarkdown(_ content: String) -> String {
+        // Leave fenced code blocks intact; only normalize plain text around them.
+        let s = content.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+        var output: [String] = []
+        var cursor = s.startIndex
+        while cursor < s.endIndex {
+            if let fenceRange = s[cursor...].range(of: "```") {
+                // Normalize text before the fence
+                let before = String(s[cursor..<fenceRange.lowerBound])
+                output.append(normalizeParagraphs(before))
+                // Capture fenced block verbatim (including trailing fence)
+                var after = s[fenceRange.upperBound...]
+                if let fenceEnd = after.range(of: "```") {
+                    output.append("```" + String(after[..<fenceEnd.lowerBound]) + "```")
+                    cursor = fenceEnd.upperBound
+                } else {
+                    // Unterminated fence: take the rest as code
+                    output.append("```" + String(after))
+                    cursor = s.endIndex
+                }
+            } else {
+                // No more fences: normalize the rest
+                let tail = String(s[cursor...])
+                output.append(normalizeParagraphs(tail))
+                cursor = s.endIndex
+            }
+        }
+        // Collapse 3+ blank lines into max 2
+        let joined = output.joined()
+        let lines = joined.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var compact: [String] = []
+        var emptyStreak = 0
+        for line in lines {
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                emptyStreak += 1
+                if emptyStreak <= 2 { compact.append("") }
+            } else {
+                emptyStreak = 0
+                compact.append(line)
+            }
+        }
+        return compact.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func normalizeParagraphs(_ text: String) -> String {
+        // Build paragraphs by joining adjacent non-special lines; insert blank lines between paragraphs.
+        let rawLines = text.split(separator: "\n", omittingEmptySubsequences: false).map { String($0) }
+        var result: [String] = []
+        var para: [String] = []
+
+        func flushParagraph() {
+            guard !para.isEmpty else { return }
+            var joined = para.map { $0.trimmingCharacters(in: .whitespaces) }.joined(separator: " ")
+            joined = ensureSpaceAfterPunctuation(joined)
+            joined = ensureTerminalPunctuation(joined)
+            result.append(joined)
+            result.append("") // blank line between paragraphs
+            para.removeAll()
+        }
+
+        for line in rawLines {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.isEmpty {
+                flushParagraph()
+                continue
+            }
+            if isSpecialMarkdownLine(t) {
+                flushParagraph()
+                result.append(t)
+                result.append("")
+            } else {
+                para.append(t)
+            }
+        }
+        flushParagraph()
+
+        // Remove trailing blank line if present
+        while let last = result.last, last.trimmingCharacters(in: .whitespaces).isEmpty { result.removeLast() }
+        return result.joined(separator: "\n") + (result.isEmpty ? "" : "\n")
+    }
+
+    private func isSpecialMarkdownLine(_ t: String) -> Bool {
+        return isHeading(t) || isListStart(t) || isBlockquote(t) || looksLikeTableRow(t) || isHorizontalRule(t)
+    }
+
+    private func isHeading(_ t: String) -> Bool { t.hasPrefix("#") }
+    private func isBlockquote(_ t: String) -> Bool { t.hasPrefix(">") }
+    private func isHorizontalRule(_ t: String) -> Bool {
+        let trimmed = t.replacingOccurrences(of: " ", with: "")
+        return trimmed.allSatisfy { $0 == "-" } && trimmed.count >= 3
+    }
+    private func isListStart(_ t: String) -> Bool {
+        if t.hasPrefix("- ") || t.hasPrefix("* ") || t.hasPrefix("+ ") { return true }
+        // Numbered lists: 1. or 1)
+        var digits = 0
+        for ch in t { if ch.isNumber { digits += 1 } else { break } }
+        if digits > 0 && t.count > digits {
+            let idx = t.index(t.startIndex, offsetBy: digits)
+            let ch = t[idx]
+            if ch == "." || ch == ")" { return true }
+        }
+        return false
+    }
+    private func looksLikeTableRow(_ t: String) -> Bool {
+        // A conservative check: treat pipe-separated lines as table candidates.
+        // Avoid matching inline code by skipping lines that start with four spaces or a tab.
+        if t.hasPrefix("    ") || t.hasPrefix("\t") { return false }
+        return t.contains("|")
+    }
+
+    private func ensureTerminalPunctuation(_ s: String) -> String {
+        let trimmed = s.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return s }
+        // Skip if the line already ends with obvious punctuation or a closing pair after punctuation
+        let terminalPunct: Set<Character> = [".", "!", "?", ";", ":", "…"]
+        if let last = trimmed.last, terminalPunct.contains(last) { return trimmed }
+        // Avoid adding punctuation to lines that likely aren't sentences
+        if isHeading(trimmed) || isListStart(trimmed) || isBlockquote(trimmed) || looksLikeTableRow(trimmed) { return trimmed }
+        // Require at least one alphabetic character
+        if trimmed.rangeOfCharacter(from: .letters) == nil { return trimmed }
+        // If ends with a closing bracket/quote, inspect preceding char
+        let closers: Set<Character> = [")", "]", "}", "\"", "'", "”", "’"]
+        if let last = trimmed.last, closers.contains(last) {
+            let before = trimmed.dropLast().trimmingCharacters(in: .whitespaces)
+            if let b = before.last, terminalPunct.contains(b) { return trimmed }
+            return trimmed + "."
+        }
+        // Ends with alphanumeric -> add a period
+        if let scalar = trimmed.unicodeScalars.last, CharacterSet.alphanumerics.contains(scalar) {
+            return trimmed + "."
+        }
+        return trimmed
+    }
+
+    // Ensure a single space after sentence punctuation inside a paragraph, without touching URLs, numbers, or code.
+    private func ensureSpaceAfterPunctuation(_ s: String) -> String {
+        let closers: Set<Character> = [")", "]", "}", "\"", "'", "”", "’"]
+        let punctuation: Set<Character> = [".", "!", "?", ";", ":"]
+        let skipNext: Set<Character> = [".", "!", "?", ";", ":", ","]
+        
+        var result = s
+        
+        // First pass: handle punctuation marks
+        let chars = Array(result)
+        var out: String = ""
+        out.reserveCapacity(chars.count + 16)
+        for i in chars.indices {
+            let c = chars[i]
+            out.append(c)
+            guard punctuation.contains(c) else { continue }
+            let hasNext = i < chars.count - 1
+            if !hasNext { continue }
+            let next = chars[i + 1]
+            // If already spaced or followed by a closing mark or another punctuation, skip
+            if next.isWhitespace || closers.contains(next) || skipNext.contains(next) { continue }
+            // Special cases
+            if c == "." {
+                // Avoid decimals like 3.14 and ellipsis ...
+                let hasPrev = i > 0
+                if hasPrev {
+                    let prev = chars[i - 1]
+                    if prev.isNumber && next.isNumber { continue }
+                    if prev == "." { continue } // part of ellipsis
+                }
+            } else if c == ":" {
+                // Avoid URLs like http:// and times like 10:30
+                if i + 2 < chars.count && chars[i + 1] == "/" && chars[i + 2] == "/" { continue }
+                let hasPrev = i > 0
+                if hasPrev {
+                    let prev = chars[i - 1]
+                    if prev.isNumber && next.isNumber { continue }
+                }
+            }
+            out.append(" ")
+        }
+        result = out
+        
+        // Second pass: ensure space after emoji if followed by text
+        // This handles cases like "👋What's" -> "👋 What's"
+        var finalResult = ""
+        finalResult.reserveCapacity(result.count + 8)
+        var lastWasEmoji = false
+        for scalar in result.unicodeScalars {
+            let isEmoji = scalar.properties.isEmoji && scalar.properties.isEmojiPresentation
+            if lastWasEmoji && !scalar.properties.isWhitespace && !isEmoji {
+                // Previous was emoji, current is non-whitespace non-emoji -> add space
+                finalResult.append(" ")
+            }
+            finalResult.append(Character(scalar))
+            lastWasEmoji = isEmoji
+        }
+        
+        return finalResult
     }
 
     // MARK: - Input history navigation
