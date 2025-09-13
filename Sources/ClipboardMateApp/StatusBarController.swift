@@ -49,7 +49,7 @@ struct MainTabView: View {
     let onClose: () -> Void
 
     @State private var selectedTab: Int = 0
-    private let tabCount: Int = 2
+    private let tabCount: Int = 3
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -59,6 +59,9 @@ struct MainTabView: View {
             ChatbotView(isActiveTab: Binding(get: { selectedTab == 1 }, set: { _ in }))
                 .tabItem { Label("Chatbot", systemImage: "bubble.left.and.bubble.right") }
                 .tag(1)
+            TodoView()
+                .tabItem { Label("To-Do", systemImage: "checkmark.circle") }
+                .tag(2)
         }
         .frame(width: 520, height: 560)
         // Capture Ctrl+Tab to move between tabs
