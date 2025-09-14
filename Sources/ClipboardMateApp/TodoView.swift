@@ -30,6 +30,14 @@ final class TodoStore: ObservableObject {
         }
     }
     
+    func rename(_ id: UUID, title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if let idx = items.firstIndex(where: { $0.id == id }) {
+            items[idx].title = trimmed
+        }
+    }
+    
     func delete(_ id: UUID) {
         items.removeAll { $0.id == id }
     }
@@ -74,7 +82,8 @@ struct TodoView: View {
                     TodoRow(
                         item: item,
                         onToggle: { isOn in store.set(item.id, done: isOn) },
-                        onDelete: { store.delete(item.id) }
+                        onDelete: { store.delete(item.id) },
+                        onRename: { newTitle in store.rename(item.id, title: newTitle) }
                     )
                 }
                 .onDelete { offsets in store.delete(at: offsets) }
@@ -99,22 +108,48 @@ private struct TodoRow: View {
     let item: TodoItem
     let onToggle: (Bool) -> Void
     let onDelete: () -> Void
+    let onRename: (String) -> Void
+    
+    @State private var editing = false
+    @State private var draftTitle: String = ""
     
     var body: some View {
         HStack(spacing: 8) {
             Toggle("", isOn: Binding(get: { item.isDone }, set: onToggle))
                 .labelsHidden()
                 .toggleStyle(.checkbox)
-            Text(item.title)
-                .strikethrough(item.isDone)
-                .foregroundStyle(item.isDone ? .secondary : .primary)
-                .textSelection(.enabled)
-            Spacer()
+            if editing {
+                TextField("Task", text: $draftTitle, onCommit: commit)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
+                    .onAppear { draftTitle = item.title }
+            } else {
+                Text(item.title)
+                    .strikethrough(item.isDone)
+                    .foregroundStyle(item.isDone ? .secondary : .primary)
+                    .textSelection(.enabled)
+                    .onTapGesture(count: 2) { enterEdit() }
+            }
+            Spacer(minLength: 0)
+            if !editing {
+                Button(action: enterEdit) { Image(systemName: "pencil") }
+                    .buttonStyle(.borderless)
+            }
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
         }
         .padding(.vertical, 4)
+    }
+    
+    private func enterEdit() {
+        draftTitle = item.title
+        editing = true
+    }
+    
+    private func commit() {
+        editing = false
+        onRename(draftTitle)
     }
 }

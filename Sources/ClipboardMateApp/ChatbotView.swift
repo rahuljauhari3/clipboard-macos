@@ -47,49 +47,70 @@ struct ChatbotView: View {
                 .cornerRadius(8)
                 Spacer()
             } else {
-                HStack(spacing: 8) {
-                    Picker("Model", selection: Binding(
-                        get: { selectedModel?.id ?? "" },
-                        set: { id in selectedModel = models.first { $0.id == id } }
-                    )) {
-                        ForEach(filteredModels(), id: \.id) { m in
-                            Text(m.id).tag(m.id)
-                        }
-                    }
-                    .frame(maxWidth: 280)
-
-                    Toggle("Search Web", isOn: $useWebSearch)
-                        .onChange(of: useWebSearch) { _, _ in
-                            // If currently selected model doesn't support web search while enabled, clear selection
-                            if useWebSearch, let sel = selectedModel, !sel.supportsWebSearch {
-                                selectedModel = filteredModels().first
+                VStack(spacing: 8) {
+                    HStack(spacing: 8) {
+                        Picker("Model", selection: Binding(
+                            get: { selectedModel?.id ?? "" },
+                            set: { id in 
+                                selectedModel = filteredModels().first { $0.id == id }
+                            }
+                        )) {
+                            Text("Select Model").tag("")
+                            ForEach(filteredModels(), id: \.id) { m in
+                                Text(m.id).tag(m.id)
                             }
                         }
+                        .frame(maxWidth: 280)
+                        .disabled(filteredModels().isEmpty)
 
-                    Spacer()
-                    Button("Clear Chat") { messages.removeAll() }
-                        .disabled(messages.isEmpty)
-                }
+                        Toggle("Search Web", isOn: $useWebSearch)
+                            .onChange(of: useWebSearch) { _, newValue in
+                                let filtered = filteredModels()
+                                // If currently selected model doesn't support web search while enabled, switch to first available
+                                if newValue {
+                                    if let sel = selectedModel, !sel.supportsWebSearch {
+                                        selectedModel = filtered.first
+                                    }
+                                } else {
+                                    // When disabling web search, keep selection if still valid
+                                    if let sel = selectedModel, !filtered.contains(where: { $0.id == sel.id }) {
+                                        selectedModel = filtered.first
+                                    }
+                                }
+                            }
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(Array(messages.enumerated()), id: \.offset) { _, msg in
-                            ChatMessageRow(
-                                message: msg,
-                                markdownRenderer: { content in markdownText(content) },
-                                onCopyCode: { code in ClipboardService.copyTextToClipboard(code) }
-                            )
-                        }
-                        if let errorText { Text(errorText).foregroundStyle(.red).font(.caption) }
+                        Spacer()
+                        Button("Clear Chat") { messages.removeAll() }
+                            .disabled(messages.isEmpty)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
+                    
+                    if useWebSearch && filteredModels().isEmpty {
+                        Text("No models with web search available. Only 'compound-beta' and 'compound-beta-mini' support web search.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                 }
-                .background(Color(NSColor.textBackgroundColor))
-                .cornerRadius(6)
 
-            HStack(alignment: .center) {
-TextField("Ask something...", text: $input, axis: .vertical)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(Array(messages.enumerated()), id: \.offset) { _, msg in
+                    ChatMessageRow(
+                                    message: msg,
+                                    markdownRenderer: { content in markdownText(content) },
+                                    onCopyCode: { code in ClipboardService.copyTextToClipboard(code) },
+                                    onCopyMessage: { if msg.role == .assistant { ClipboardService.copyTextToClipboard(msg.content) } }
+                                )
+                            }
+                            if let errorText { Text(errorText).foregroundStyle(.red).font(.caption) }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                    }
+                    .background(Color(NSColor.textBackgroundColor))
+                    .cornerRadius(6)
+
+                HStack(alignment: .center) {
+                    TextField("Ask something...", text: $input, axis: .vertical)
                         .textFieldStyle(.roundedBorder)
                         .focused($inputFocused)
                         .onSubmit { send() }
@@ -100,7 +121,7 @@ TextField("Ask something...", text: $input, axis: .vertical)
                 }
             }
         }
-.padding()
+        .padding()
         .onAppear { Task { await loadModelsIfPossible() } }
         .background(
             KeyboardHandlerRepresentable(
@@ -122,14 +143,17 @@ TextField("Ask something...", text: $input, axis: .vertical)
             let fetched = try await GroqClient.shared.fetchModels()
             await MainActor.run {
                 self.models = fetched
-                if selectedModel == nil { self.selectedModel = fetched.first }
+                // Set initial selection based on current web search state
+                if selectedModel == nil || !fetched.contains(where: { $0.id == selectedModel?.id }) {
+                    self.selectedModel = filteredModels().first
+                }
             }
         } catch {
             await MainActor.run { self.errorText = error.localizedDescription }
         }
     }
 
-private func send() {
+    private func send() {
         guard hasAPIKey else { return }
         guard let modelId = selectedModel?.id else { return }
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -416,6 +440,7 @@ private struct ChatMessageRow: View {
     let message: GroqChatMessage
     let markdownRenderer: (String) -> Text
     let onCopyCode: (String) -> Void
+    let onCopyMessage: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -449,6 +474,13 @@ private struct ChatMessageRow: View {
                 }
             }
             Spacer(minLength: 0)
+            if message.role == .assistant {
+                Button(action: onCopyMessage) {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy entire answer")
+            }
         }
     }
 
